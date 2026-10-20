@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/soroworks/soroforge/internal/catalog"
 	"github.com/soroworks/soroforge/internal/deploy"
 	"github.com/soroworks/soroforge/internal/netcheck"
 	"github.com/soroworks/soroforge/internal/store"
@@ -585,6 +586,49 @@ func printStatus(r *deploy.StatusResult) error {
 		fmt.Fprintf(w, "  On-chain      %s\n", r.ActualWasmHash)
 	}
 
+	return nil
+}
+
+// diffMarks are the line prefixes for each kind of interface change.
+var diffMarks = map[catalog.ChangeKind]string{
+	catalog.Added:   "+",
+	catalog.Removed: "-",
+	catalog.Changed: "~",
+}
+
+func printDiff(r *deploy.DiffResult) error {
+	if flags.jsonOutput {
+		return printJSON(r)
+	}
+
+	w := out()
+	fmt.Fprintf(w, "%s on %s: %s  →  %s\n\n", r.Alias, r.Network, shortHash(r.From), shortHash(r.To))
+	if len(r.Changes) == 0 {
+		fmt.Fprintln(w, "No interface changes.")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 4, ' ', 0)
+	for _, c := range r.Changes {
+		line := diffMarks[c.Kind] + " " + c.Signature
+		if c.Kind == catalog.Removed && c.Item != "fn" {
+			line = diffMarks[c.Kind] + " " + c.Item + " " + c.Name
+		}
+		note := ""
+		if c.Previous != "" {
+			note = "(was: " + c.Previous + ")"
+		}
+		if c.Breaking {
+			note = strings.TrimSpace(note + " [breaking]")
+		}
+		fmt.Fprintf(tw, "%s\t%s\n", line, note)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if r.Breaking {
+		fmt.Fprintln(w, "\nThis upgrade has breaking changes.")
+	}
 	return nil
 }
 

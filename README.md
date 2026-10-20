@@ -468,6 +468,7 @@ contracts:
 |---|---|
 | `DATABASE_URL` | History database: `postgres://...` or `sqlite:///path/to/file.db`. Required except for `deploy --dry-run`. |
 | `SOROFORGE_SECRET_KEY` | Deployer secret seed (`S...`). |
+| `SOROFORGE_COSIGNER_KEYSTORES` | Path list (separated like `PATH`) of co-signer keystore files, for a multisig deployer account. See [Security notes](#security-notes-on-key-handling). |
 | `SOROFORGE_KEYSTORE_PATH` | Path to a file containing only the seed. |
 | `SOROFORGE_ALLOW_INSECURE_KEYSTORE` | Set to `1` to allow keystore files readable by group or others. |
 | `SOROFORGE_SIGNER_COMMAND` | External signing executable, for an HSM or KMS. Mutually exclusive with the seed sources. |
@@ -547,6 +548,7 @@ of an error printed mid-prompt.
 | `history import <file>` | Load an export into an empty database; `--merge` imports into a populated one. |
 | `status <alias>` | Compare the on-chain WASM hash against the recorded one. |
 | `status --all` | Drift-check every tracked contract on the network, for a single CI gate. |
+| `diff <alias>` | Show the interface change between two recorded versions, read from the network's SoroVault; `--fail-on-breaking` gates CI. |
 | `networks` | Health-check every configured RPC endpoint: responds? latency, latest ledger, passphrase match. |
 | `serve` | Run the HTTP API. |
 | `migrate up\|down\|version` | Manage the schema. |
@@ -596,6 +598,25 @@ is one of `deployed`, `dry_run`, `skipped`, or `failed`.
 Contracts are processed in alias order, and SoroForge does not infer
 dependencies between them: if one contract's constructor needs another
 contract's address, deploy them individually in the order you need.
+
+**`diff`** shows what an upgrade changed in a contract's interface. `history`
+lists WASM hashes; when the network has a `sorovault_url`, SoroVault holds the
+decoded interface of every version, and `diff` compares two of them — the last
+two recorded by default, or any pair with `--from <hash> --to <hash>`:
+
+```
+counter on testnet: 3f2a91c04b7e…  →  9c1e55d0a3f2…
+
++ fn reset(admin: Address)
+~ fn increment(by: u32) -> u32    (was: fn increment() -> u32) [breaking]
+- struct LegacyConfig             [breaking]
+```
+
+Removed or changed functions, and removed or changed types (which callers
+encode as arguments), are **breaking**; additions and event changes are not.
+`--fail-on-breaking` exits `2` when there are breaking changes, so the command
+can gate an upgrade in CI. `--json` returns the full change list. A network
+without a `sorovault_url` is an error naming it.
 
 **`status` exit codes** make it usable as a CI gate:
 
@@ -892,10 +913,32 @@ deploy — a dashboard, a monitoring job, a status page. It can call every `GET`
 route but is refused with `403` on `/v1/deploy` and `/v1/upgrade`, so a leak
 cannot become a mainnet transaction.
 
-**Not implemented, by design:** key generation, multisig or threshold signing,
-and CI plugin integrations. Hardware wallets and KMS-backed keys are supported
-through the external signer command. The `stellar.Signer` interface remains the
-extension point for signing-related work — see
+**Multisig deployer accounts:** a deployer account protected by multisig
+thresholds signs with the primary key (from any source above — its address is
+the transaction source and the recorded deployer) plus co-signers listed in
+`SOROFORGE_COSIGNER_KEYSTORES`, a path list separated like `PATH`:
+
+```bash
+export SOROFORGE_KEYSTORE_PATH=~/.soroforge/deployer        # primary
+export SOROFORGE_COSIGNER_KEYSTORES=~/.soroforge/cosigner-a:~/.soroforge/cosigner-b
+```
+
+- Co-signer seeds come from **keystore files only**, never from environment
+  variables, and each file gets the same mode-`0600` check as the primary
+  keystore. Errors name the file, never its contents.
+- A key configured twice — including the primary listed again as a
+  co-signer — is rejected before anything is built: a duplicate signature makes
+  the network refuse the transaction.
+- Co-signers without a primary key are rejected.
+- No fee margin is needed for the extra signatures: a 2-of-2 Soroban
+  transaction submits on testnet with the simulated resource fee unchanged
+  (`SOROFORGE_LIVE_MULTISIG=1 go test ./internal/stellar/ -run LiveMultisig -v`
+  reproduces it with throwaway friendbot accounts).
+
+**Not implemented, by design:** key generation and CI plugin integrations.
+Hardware wallets and KMS-backed keys are supported through the external signer
+command. The `stellar.Signer` interface remains the extension point for
+signing-related work — see
 [`internal/stellar/signer.go`](internal/stellar/signer.go).
 
 ### External signers
